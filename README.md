@@ -204,3 +204,26 @@ excerpt: Showing image organization.
 
 ---
 Happy writing!
+
+---
+
+## 16. Deploying to GitHub Pages
+
+This repo is configured for static export deployment via GitHub Pages.
+
+Steps:
+
+1. Ensure your default branch is `main` (or `master`, both are wired in the workflow).
+2. Push changes – GitHub Action builds and exports to `out/` and publishes.
+3. In repo Settings → Pages: set Source = GitHub Actions (should auto‑configure on first deploy).
+
+Local test of export:
+
+```bash
+npm ci
+npm run prebuild
+npm run build   # runs next build + next export
+serve out       # optionally preview with any static server
+```
+
+If you use a project (non-user) repo name, set `assetPrefix` and `basePath` in `next.config.ts`. For `<user>.github.io` root deployment they are not required.

@@ -4,8 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
-  "prebuild": "node scripts/organize-post-images.mjs && node scripts/generate-image-manifest.mjs",
-    "build": "next build",
+    "prebuild": "node scripts/organize-post-images.mjs && node scripts/generate-image-manifest.mjs",
+    "build": "next build && next export",
+    "export": "next export",
+    "pages": "npm run build",
     "start": "next start",
     "lint": "next lint"
   },

@@ -5,14 +5,14 @@ import path from 'node:path';
 import MdxRenderer from '@/components/MdxRenderer';
 
 export async function generateStaticParams() {
-  // Only pre-render plain markdown (.md) posts; leave .mdx dynamic to avoid build-time MDX runtime issues.
+  // For static export we pre-render both .md and .mdx.
   const dir = path.join(process.cwd(), 'content', 'posts');
-  const mdFiles = fs.readdirSync(dir).filter(f => f.endsWith('.md'));
-  return mdFiles.map(f => ({ slug: f.replace(/\.md$/, '') }));
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.md') || f.endsWith('.mdx'));
+  return files.map(f => ({ slug: f.replace(/\.mdx?$/, '') }));
 }
 
-export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
-  const { slug } = await params;
+export default async function BlogPost({ params }: { params: { slug: string } }) {
+  const { slug } = params;
   try {
     const post = await getPostBySlug(slug);
     return (
