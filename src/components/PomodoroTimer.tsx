@@ -562,7 +562,11 @@ export default function PomodoroTimer() {
         }
   if (parsed.repeat !== undefined) setRepeat(!!parsed.repeat);
   if (parsed.showVideo !== undefined) setShowVideo(!!parsed.showVideo);
-  if (typeof parsed.playerCurrentTime === 'number') resumeTimeRef.current = parsed.playerCurrentTime;
+  if (typeof parsed.playerCurrentTime === 'number') {
+    resumeTimeRef.current = parsed.playerCurrentTime;
+    // Reflect immediately in UI before player instantiates
+    setCurrentTimeSec(parsed.playerCurrentTime);
+  }
   if (typeof parsed.playerIsPlaying === 'boolean') resumeShouldPlayRef.current = parsed.playerIsPlaying;
       }
     } catch {}
@@ -611,6 +615,29 @@ export default function PomodoroTimer() {
     };
     save();
   }, [currentTimeSec, isPlayingAudio, currentIndex]);
+
+  // Save immediately on page unload (hard refresh / close) to minimize lost progress
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleBeforeUnload = () => {
+      try {
+        const raw = localStorage.getItem('pomodoroSettings');
+        const existing = raw ? JSON.parse(raw) : {};
+        existing.playerCurrentTime = currentTimeSec;
+        existing.playerIsPlaying = isPlayingAudio;
+        existing.currentIndex = currentIndex;
+        localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
+      } catch {}
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [currentTimeSec, isPlayingAudio, currentIndex]);
+
+  // --- Optional remote persistence stub (no-op for static export) ---
+  // To enable server persistence, implement an API endpoint and call saveRemote(data).
+  const saveRemote = useCallback((data: unknown) => {
+    // Example: fetch('https://your-endpoint.example.com/pomodoro', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  }, []);
 
   function formatVideoDuration(sec?: number) {
     if (!sec && sec !== 0) return '—';
