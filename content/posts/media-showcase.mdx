@@ -1,0 +1,45 @@
+---
+slug: media-showcase
+title: Media Showcase Post
+date: 2025-01-01
+excerpt: Demonstrating rich MDX features with images, audio, and JSX components.
+---
+
+# Rich Media Showcase
+
+Here is an inline image:
+
+<img src="/globe.svg" alt="Globe" width="120" />
+
+And using the shorthand MDX image (still rendered through our custom component):
+
+![Window](/window.svg)
+
+## Audio
+
+<Audio src="/sample-audio.mp3" />
+
+> Note: Add a file named `sample-audio.mp3` into `public/` for this to play.
+
+## JSX Logic
+
+{/** Simple live JSX logic inside MDX */}
+
+{(() => {
+  const now = new Date();
+  return <p>Current date rendered via inline JS: <strong>{now.getDate()}/{now.getMonth() + 1}/{now.getFullYear()}</strong></p>;
+})()}
+
+## Code Block
+
+```ts
+function greet(name: string) {
+  return `Hello ${name}!`;
+}
+```
+
+Raw HTML (allowed via rehype-raw):
+
+<div style={{padding:'1rem',border:'1px solid var(--border)',borderRadius:'8px'}}>
+  <em>Custom styled HTML container.</em>
+</div>

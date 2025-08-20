@@ -1,26 +1,132 @@
+/* Tailwind v4: import framework + custom layer overrides */
 @import "tailwindcss";
 
+/* Dark (default) theme tokens */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: dark;
+  --bg: #0b0f19;
+  --card: #121726;
+  --text: #e8ecf1;
+  --muted: #9aa5b1;
+  --brand: #2563eb;
+  --border: rgba(255,255,255,0.08);
+  --nav-bg: rgba(0,0,0,0.25);
+  --nav-border: rgba(255,255,255,0.06);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* Light theme overrides when data-theme="light" on <html> */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --card: #ffffff;
+  --text: #0f172a;
+  --muted: #64748b;
+  --brand: #2563eb;
+  --border: rgba(0,0,0,0.08);
+  --nav-bg: rgba(255,255,255,0.7);
+  --nav-border: rgba(0,0,0,0.06);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+html, body, #__next { height: 100%; }
+body { background: var(--bg); color: var(--text); transition: background-color .35s, color .35s; }
+
+/* Code highlighting (rehype-pretty-code) */
+pre code { counter-reset: line; }
+pre [data-line] { display: block; padding-inline: 0.25rem 0.75rem; }
+pre [data-line].line--highlight { background: color-mix(in srgb, var(--accent) 25%, transparent); }
+pre .word--highlight { background: color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 4px; padding: 0 2px; }
+pre { position: relative; }
+pre[data-theme] { background: var(--surface); }
+code[data-line-numbers] { counter-reset: line; }
+code[data-line-numbers] [data-line]::before { counter-increment: line; content: counter(line); display: inline-block; width: 2ch; margin-right: 1ch; opacity: .35; text-align: right; }
+
+/* Optional: override Tailwind's container (keep a fixed 64rem instead of responsive breakpoints) */
+.container {
+  max-width: 64rem;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+@media (min-width: 768px) {
+  .container { padding-left: 2rem; padding-right: 2rem; }
+}
+@media (min-width: 1280px) {
+  .container { padding-left: 3rem; padding-right: 3rem; }
+}
+
+.card {
+  background: var(--card);
+  background-image: linear-gradient(145deg, color-mix(in srgb, var(--card) 96%, transparent) 0%, var(--card) 100%);
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  padding: 1.5rem;
+  box-shadow: 0 4px 24px -4px rgba(0,0,0,0.35), 0 2px 6px -1px rgba(0,0,0,0.3);
+}
+[data-theme="light"] .card {
+  box-shadow: 0 2px 8px -2px rgba(0,0,0,0.08), 0 1px 3px rgba(0,0,0,0.06);
+}
+
+.btn {
+  display: inline-flex; /* inline-flex */
+  align-items: center; /* items-center */
+  justify-content: center; /* justify-center */
+  border-radius: 0.75rem; /* rounded-xl */
+  padding: 0.5rem 1rem; /* py-2 px-4 */
+  font-weight: 500; /* font-medium */
+  transition: all 150ms ease-in-out; /* transition */
+}
+
+.btn:hover {
+  opacity: 0.9; /* hover:opacity-90 */
+}
+
+.btn-primary {
+  background: #2563eb; /* blue-600 */
+  color: #ffffff; /* text-white */
+}
+
+.nav-link {
+  font-size: 0.875rem; /* text-sm */
+  line-height: 1.25rem;
+  transition: opacity 150ms ease-in-out;
+}
+
+@media (min-width: 768px) {
+  .nav-link {
+    font-size: 1rem; /* md:text-base */
+    line-height: 1.5rem;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+.nav-link:hover {
+  opacity: 0.8; /* hover:opacity-80 */
+}
+
+.active {
+  text-decoration: underline;
+  text-underline-offset: 4px; /* underline-offset-4 */
+}
+
+/* Utility helpers (optional) */
+.text-gradient {
+  background: linear-gradient(90deg, var(--brand), #4f46e5);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.fade-border {
+  position: relative;
+}
+.fade-border:before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: linear-gradient(120deg, rgba(255,255,255,0.15), rgba(255,255,255,0));
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
 }

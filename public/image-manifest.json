@@ -1,0 +1,26 @@
+{
+  "/window.svg": {
+    "path": "/window.svg",
+    "original": {
+      "width": 16,
+      "height": 16,
+      "format": "svg"
+    },
+    "variants": []
+  },
+  "_byPost": {
+    "media-showcase": [
+      "/window.svg",
+      "/globe.svg"
+    ]
+  },
+  "/globe.svg": {
+    "path": "/globe.svg",
+    "original": {
+      "width": 16,
+      "height": 16,
+      "format": "svg"
+    },
+    "variants": []
+  }
+}
