@@ -11,8 +11,8 @@ export async function generateStaticParams() {
   return files.map(f => ({ slug: f.replace(/\.mdx?$/, '') }));
 }
 
-export default async function BlogPost({ params }: { params: { slug: string } }) {
-  const { slug } = params;
+export default async function BlogPost({ params }: { params: Promise<{ slug: string }> }) {
+  const { slug } = await params;
   try {
     const post = await getPostBySlug(slug);
     return (

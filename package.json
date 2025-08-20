@@ -5,9 +5,8 @@
   "scripts": {
     "dev": "next dev --turbopack",
     "prebuild": "node scripts/organize-post-images.mjs && node scripts/generate-image-manifest.mjs",
-    "build": "next build && next export",
-    "export": "next export",
-    "pages": "npm run build",
+  "build": "next build",
+  "pages": "next build",
     "start": "next start",
     "lint": "next lint"
   },

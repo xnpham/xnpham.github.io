@@ -222,8 +222,8 @@ Local test of export:
 ```bash
 npm ci
 npm run prebuild
-npm run build   # runs next build + next export
-serve out       # optionally preview with any static server
+npm run build   # generates static output in ./out (output: 'export')
+serve out       # preview with any static server
 ```
 
 If you use a project (non-user) repo name, set `assetPrefix` and `basePath` in `next.config.ts`. For `<user>.github.io` root deployment they are not required.
