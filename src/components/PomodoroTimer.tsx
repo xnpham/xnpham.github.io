@@ -1,6 +1,47 @@
 "use client";
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Button } from '@/components/Button';
+
+// --- Minimal YouTube IFrame API typings (subset we use) ---
+interface YTVideoData { video_id?: string; title?: string }
+interface YTPlayer {
+  playVideo(): void;
+  pauseVideo(): void;
+  stopVideo(): void;
+  destroy(): void;
+  loadVideoById(videoId: string): void;
+  getDuration(): number;
+  getCurrentTime(): number;
+  seekTo(seconds: number, allowSeekAhead: boolean): void;
+  setVolume(volume: number): void;
+  getVolume(): number;
+  getVideoData(): YTVideoData | undefined;
+  getIframe(): HTMLIFrameElement;
+  getPlayerState(): number; // 0 ended, 1 playing, 2 paused, ...
+}
+interface YTPlayerVars {
+  autoplay?: 0 | 1;
+  controls?: 0 | 1;
+  rel?: 0 | 1;
+  enablejsapi?: 0 | 1;
+  modestbranding?: 0 | 1;
+  playsinline?: 0 | 1;
+}
+interface YTOnReadyEvent { target: YTPlayer }
+interface YTOnStateChangeEvent { target: YTPlayer; data: number }
+interface YTPlayerOptions {
+  height?: string;
+  width?: string;
+  videoId: string;
+  playerVars?: YTPlayerVars;
+  events?: {
+    onReady?: (e: YTOnReadyEvent) => void;
+    onStateChange?: (e: YTOnStateChangeEvent) => void;
+  };
+}
+declare global {
+  interface Window { YT?: { Player: new (elementId: string, options: YTPlayerOptions) => YTPlayer } }
+}
 
 // Basic Pomodoro defaults
 const WORK_MIN = 25;
@@ -35,7 +76,7 @@ export default function PomodoroTimer() {
     durationSec?: number;
   }[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const playerRef = useRef<any>(null);
+  const playerRef = useRef<YTPlayer | null>(null);
   const [playerReady, setPlayerReady] = useState(false);
   const [durationSec, setDurationSec] = useState<number | null>(null);
   const [currentTimeSec, setCurrentTimeSec] = useState(0);
@@ -108,7 +149,7 @@ export default function PomodoroTimer() {
   // Load / init iframe API once
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    if ((window as any).YT && (window as any).YT.Player) return; // already loaded
+    if (window.YT && window.YT.Player) return; // already loaded
     const scriptId = 'youtube-iframe-api';
     if (document.getElementById(scriptId)) return;
     const tag = document.createElement('script');
@@ -117,15 +158,38 @@ export default function PomodoroTimer() {
     document.body.appendChild(tag);
   }, []);
 
+  // Fetch metadata (title + duration) after player loads / video changes
+  const fetchMeta = useCallback(() => {
+    let attempts = 0;
+    const poll = setInterval(() => {
+      attempts += 1;
+      try {
+        const p = playerRef.current;
+        if (p) {
+          const d = p.getDuration?.();
+            if (d && d > 0) {
+              setDurationSec(d);
+              const data = p.getVideoData?.();
+              if (data?.title) {
+                setPlaylist(pl => pl.map((item, idx) => idx === currentIndex ? { ...item, title: data.title, durationSec: d } : item));
+              }
+              clearInterval(poll);
+            }
+        }
+      } catch {}
+      if (attempts > 50) clearInterval(poll);
+    }, 300);
+  }, [currentIndex]);
+
   // Create / update player only when video ID changes (avoid reload on metadata updates)
   useEffect(() => {
     if (playlist.length === 0) return;
     const videoId = playlist[currentIndex]?.videoId;
     if (!videoId) return;
     function createOrLoad() {
-      if (!(window as any).YT || !(window as any).YT.Player) return;
+      if (!window.YT || !window.YT.Player) return;
       if (!playerRef.current) {
-        playerRef.current = new (window as any).YT.Player('yt-audio-player', {
+        playerRef.current = new window.YT.Player('yt-audio-player', {
           height: '0',
           width: '0',
           videoId,
@@ -138,23 +202,23 @@ export default function PomodoroTimer() {
             playsinline: 1,
           },
           events: {
-            onReady: (e: any) => {
+            onReady: (e) => {
               setPlayerReady(true);
-              e.target.setVolume(volume);
+              try { e.target.setVolume(volume); } catch {}
               fetchMeta();
             },
-            onStateChange: (e: any) => {
+            onStateChange: (e) => {
               if (e.data === 0) { // ended
                 if (playlist.length > 1) {
                   nextTrack();
                 } else if (repeat) {
-                  try { playerRef.current.seekTo(0, true); playerRef.current.playVideo(); } catch {}
+                  try { playerRef.current?.seekTo(0, true); playerRef.current?.playVideo(); } catch {}
                 } else {
                   setCurrentTimeSec(durationSec || 0);
                 }
                 setIsPlayingAudio(false);
               } else if (e.data === 1) { // playing
-                try { playerRef.current.setVolume(volume); } catch {}
+                try { playerRef.current?.setVolume(volume); } catch {}
                 setIsPlayingAudio(true);
               } else if (e.data === 2) { // paused
                 setIsPlayingAudio(false);
@@ -164,25 +228,25 @@ export default function PomodoroTimer() {
         });
       } else {
         try {
-          const currentVideoId = playerRef.current.getVideoData?.().video_id;
+          const currentVideoId = playerRef.current?.getVideoData?.()?.video_id;
           if (currentVideoId !== videoId) {
             playerRef.current.loadVideoById(videoId);
             fetchMeta();
           }
         } catch {}
-  try { playerRef.current.setVolume(volume); } catch {}
-  setPlayerReady(true);
-  try { const state = playerRef.current.getPlayerState?.(); setIsPlayingAudio(state === 1); } catch {}
+        try { playerRef.current?.setVolume(volume); } catch {}
+        setPlayerReady(true);
+        try { const state = playerRef.current?.getPlayerState?.(); setIsPlayingAudio(state === 1); } catch {}
       }
     }
     const interval = setInterval(() => {
-      if ((window as any).YT && (window as any).YT.Player) {
+      if (window.YT && window.YT.Player) {
         clearInterval(interval);
         createOrLoad();
       }
     }, 200);
     return () => clearInterval(interval);
-  }, [videoIdKey, currentIndex, repeat]);
+  }, [videoIdKey, currentIndex, repeat, playlist.length, volume, fetchMeta, durationSec]);
 
   // Show/hide video by adjusting iframe/container styles
   useEffect(() => {
@@ -211,28 +275,7 @@ export default function PomodoroTimer() {
     }
   }, [volume, playerReady]);
 
-  function fetchMeta() {
-    // Poll until duration available
-    let attempts = 0;
-    const poll = setInterval(() => {
-      attempts++;
-      try {
-        if (playerRef.current) {
-          const d = playerRef.current.getDuration?.();
-            if (d && d > 0) {
-              setDurationSec(d);
-              // Title
-              const data = playerRef.current.getVideoData?.();
-              if (data?.title) {
-                setPlaylist((pl) => pl.map((item, idx) => idx === currentIndex ? { ...item, title: data.title, durationSec: d } : item));
-              }
-              clearInterval(poll);
-            }
-        }
-      } catch {}
-      if (attempts > 50) clearInterval(poll);
-    }, 300);
-  }
+  // (Replaced by fetchMeta useCallback above)
 
   // Playback position tracking via rAF
   useEffect(() => {
@@ -240,7 +283,7 @@ export default function PomodoroTimer() {
     let raf: number;
     const tick = () => {
       try {
-        const t = playerRef.current.getCurrentTime?.();
+        const t = playerRef.current?.getCurrentTime?.();
         if (typeof t === 'number' && !Number.isNaN(t)) setCurrentTimeSec(t);
       } catch {}
       raf = requestAnimationFrame(tick);
