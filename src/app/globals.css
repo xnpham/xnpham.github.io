@@ -45,6 +45,8 @@ code[data-line-numbers] [data-line]::before { counter-increment: line; content: 
   max-width: 64rem;
   padding-left: 1rem;
   padding-right: 1rem;
+  margin-left: auto; /* center horizontally */
+  margin-right: auto; /* center horizontally */
 }
 @media (min-width: 768px) {
   .container { padding-left: 2rem; padding-right: 2rem; }
@@ -73,10 +75,32 @@ code[data-line-numbers] [data-line]::before { counter-increment: line; content: 
   padding: 0.5rem 1rem; /* py-2 px-4 */
   font-weight: 500; /* font-medium */
   transition: all 150ms ease-in-out; /* transition */
+  position: relative;
+  overflow: hidden;
 }
 
 .btn:hover {
   opacity: 0.9; /* hover:opacity-90 */
+}
+
+.btn:active {
+  transform: translateY(1px) scale(0.97);
+}
+
+/* Ripple effect */
+.btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at var(--ripple-x,50%) var(--ripple-y,50%), rgba(255,255,255,0.35), transparent 60%);
+  opacity: 0;
+  transition: opacity 450ms ease, transform 450ms ease;
+  transform: scale(0.2);
+  pointer-events: none;
+}
+.btn.rippling::after {
+  opacity: 1;
+  transform: scale(2.5);
 }
 
 .btn-primary {
