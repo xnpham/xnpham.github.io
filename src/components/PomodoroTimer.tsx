@@ -18,6 +18,7 @@ interface YTPlayer {
   getVideoData(): YTVideoData | undefined;
   getIframe(): HTMLIFrameElement;
   getPlayerState(): number; // 0 ended, 1 playing, 2 paused, ...
+  setSize(width: number, height: number): void;
 }
 interface YTPlayerVars {
   autoplay?: 0 | 1;
@@ -64,6 +65,8 @@ export default function PomodoroTimer() {
   const [secondsLeft, setSecondsLeft] = useState(workMinutes * 60);
   const [mode, setMode] = useState<'work' | 'break'>('work');
   const [isRunning, setIsRunning] = useState(false);
+  // Epoch (ms) when current interval ends. Used so timer survives tab sleep / background.
+  const [targetEpoch, setTargetEpoch] = useState<number | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -83,44 +86,91 @@ export default function PomodoroTimer() {
   const [repeat, setRepeat] = useState(false);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [showVideo, setShowVideo] = useState(false);
+  const [videoExpanded, setVideoExpanded] = useState(true); // true = full size, false = mini
+  const inlineHostRef = useRef<HTMLDivElement | null>(null);
+  // Resume support
+  const resumeTimeRef = useRef<number | null>(null);
+  const resumeShouldPlayRef = useRef<boolean>(false);
   // Key comprised only of video IDs to avoid effect retriggers on title/duration updates
   const videoIdKey = playlist.map(p => p.videoId).join(',');
 
-  // Update secondsLeft if user changes duration while stopped
+  // Create a global container for the YouTube player (persists across page navigation)
   useEffect(() => {
-    if (!isRunning) {
-      setSecondsLeft((mode === 'work' ? workMinutes : breakMinutes) * 60);
+    if (typeof document === 'undefined') return;
+    let container = document.getElementById('global-yt-player-container');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'global-yt-player-container';
+      container.style.position = 'absolute';
+      container.style.width = '0px';
+      container.style.height = '0px';
+      container.style.overflow = 'hidden';
+      container.style.left = '-9999px';
+      container.style.top = '0';
+      const playerDiv = document.createElement('div');
+      playerDiv.id = 'yt-audio-player';
+      container.appendChild(playerDiv);
+      document.body.appendChild(container);
+    } else if (!document.getElementById('yt-audio-player')) {
+      const playerDiv = document.createElement('div');
+      playerDiv.id = 'yt-audio-player';
+      container.appendChild(playerDiv);
     }
+  }, []);
+
+  // Update secondsLeft (and adjust target) when durations change
+  useEffect(() => {
+    const base = (mode === 'work' ? workMinutes : breakMinutes) * 60;
+    if (!isRunning) {
+      setSecondsLeft(base);
+      return;
+    }
+    // Clamp remaining to new base and reset targetEpoch
+    setSecondsLeft(prev => {
+      const clamped = Math.min(prev, base);
+      setTargetEpoch(Date.now() + clamped * 1000);
+      return clamped;
+    });
   }, [workMinutes, breakMinutes, mode, isRunning]);
 
-  // Main ticking effect
+  // Main ticking effect (timestamp based for background accuracy)
   useEffect(() => {
-    if (!isRunning) {
+    if (!isRunning || !targetEpoch) {
       if (intervalRef.current) clearInterval(intervalRef.current);
-      return () => {};
+      return;
     }
-    intervalRef.current = setInterval(() => {
-      setSecondsLeft((prev) => {
-        if (prev > 1) return prev - 1;
-        // Cycle end
-        const nextMode = mode === 'work' ? 'break' : 'work';
-        const nextSeconds = (nextMode === 'work' ? workMinutes : breakMinutes) * 60;
+    const tick = () => {
+      const now = Date.now();
+      const remaining = Math.max(0, Math.round((targetEpoch - now) / 1000));
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        // Cycle transition (handle possibly multiple missed cycles if tab slept long)
+        let nextMode: 'work' | 'break' = mode;
+        let nextSeconds = (nextMode === 'work' ? workMinutes : breakMinutes) * 60;
+        let newTarget = targetEpoch; // original target reached
+        let safety = 12; // prevent infinite loop
+        while (safety-- > 0 && newTarget <= now) {
+          // Switch mode
+            nextMode = nextMode === 'work' ? 'break' : 'work';
+            nextSeconds = (nextMode === 'work' ? workMinutes : breakMinutes) * 60;
+            newTarget += nextSeconds * 1000;
+        }
         setMode(nextMode);
+        setSecondsLeft(Math.max(1, Math.round((newTarget - now) / 1000)));
+        setTargetEpoch(newTarget);
         if (audioRef.current) {
           audioRef.current.currentTime = 0;
           audioRef.current.play().catch(() => {});
         }
         if (nextMode === 'work' && autoPlayMusic && playlist.length > 0) {
-          // resume / ensure playing
           playCurrent(true);
         }
-        return nextSeconds;
-      });
-    }, 1000);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      }
     };
-  }, [isRunning, mode, workMinutes, breakMinutes, autoPlayMusic, playlist, currentIndex]);
+    tick(); // initial sync
+    intervalRef.current = setInterval(tick, 1000);
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  }, [isRunning, targetEpoch, mode, workMinutes, breakMinutes, autoPlayMusic, playlist.length]);
 
   const progress = () => {
     const total = (mode === 'work' ? workMinutes : breakMinutes) * 60;
@@ -128,12 +178,22 @@ export default function PomodoroTimer() {
   };
 
   function toggleRun() {
-    setIsRunning((r) => !r);
+    setIsRunning(r => {
+      const next = !r;
+      if (next) {
+        // starting / resuming
+        setTargetEpoch(Date.now() + secondsLeft * 1000);
+      } else {
+        setTargetEpoch(null);
+      }
+      return next;
+    });
   }
   function reset() {
     setIsRunning(false);
     setMode('work');
     setSecondsLeft(workMinutes * 60);
+    setTargetEpoch(null);
   }
   // ---------- YouTube utilities ----------
   function parseYouTubeId(url: string) {
@@ -206,6 +266,13 @@ export default function PomodoroTimer() {
               setPlayerReady(true);
               try { e.target.setVolume(volume); } catch {}
               fetchMeta();
+              // Resume position if available
+              if (resumeTimeRef.current != null) {
+                try { playerRef.current?.seekTo(resumeTimeRef.current, true); } catch {}
+              }
+              if (resumeShouldPlayRef.current) {
+                try { playerRef.current?.playVideo(); setIsPlayingAudio(true); } catch {}
+              }
             },
             onStateChange: (e) => {
               if (e.data === 0) { // ended
@@ -248,25 +315,54 @@ export default function PomodoroTimer() {
     return () => clearInterval(interval);
   }, [videoIdKey, currentIndex, repeat, playlist.length, volume, fetchMeta, durationSec]);
 
-  // Show/hide video by adjusting iframe/container styles
+  // Show/hide & expand/collapse video: only mount iframe in inline host when expanded.
   useEffect(() => {
-    if (!playerRef.current) return;
-    try {
-      const iframe: HTMLIFrameElement | undefined = playerRef.current.getIframe?.();
-      if (iframe) {
-        if (showVideo) {
-          iframe.style.position = 'static';
-          iframe.style.width = '100%';
-          iframe.style.height = '100%';
-        } else {
-          iframe.style.position = 'absolute';
-          iframe.style.width = '0px';
-          iframe.style.height = '0px';
-          iframe.style.left = '-9999px';
-        }
+    if (typeof document === 'undefined') return;
+    const globalContainer = document.getElementById('global-yt-player-container');
+    const playerDiv = document.getElementById('yt-audio-player');
+    if (!globalContainer || !playerDiv) return;
+    // When we want to show AND expanded: move iframe into inline host
+    if (showVideo && videoExpanded && inlineHostRef.current) {
+      inlineHostRef.current.appendChild(playerDiv);
+      inlineHostRef.current.style.display = 'block';
+      inlineHostRef.current.style.position = 'relative';
+      try { playerRef.current?.setSize(inlineHostRef.current.clientWidth, inlineHostRef.current.clientHeight); } catch {}
+      // keep global container hidden (iframe no longer there)
+      globalContainer.style.position = 'absolute';
+      globalContainer.style.width = '0px';
+      globalContainer.style.height = '0px';
+      globalContainer.style.left = '-9999px';
+    } else {
+      // Collapse or hide: move iframe back to hidden global container so audio can continue (size 0)
+      if (playerDiv.parentElement !== globalContainer) {
+        globalContainer.appendChild(playerDiv);
       }
-    } catch {}
-  }, [showVideo]);
+      globalContainer.style.position = 'absolute';
+      globalContainer.style.width = '0px';
+      globalContainer.style.height = '0px';
+      globalContainer.style.left = '-9999px';
+      if (inlineHostRef.current) inlineHostRef.current.style.display = 'none';
+      try { playerRef.current?.setSize(0, 0); } catch {}
+    }
+  }, [showVideo, videoExpanded]);
+
+  // Resize player when expansion toggles (only if expanded)
+  useEffect(() => {
+    if (!showVideo || !videoExpanded) return; // only manage size while expanded
+    const host = inlineHostRef.current;
+    if (!host) return;
+    host.style.width = '100%';
+    const maxWidth = host.parentElement?.clientWidth || host.clientWidth;
+    const height = Math.round(maxWidth * 9/16);
+    host.style.height = height + 'px';
+    try { playerRef.current?.setSize(host.clientWidth, host.clientHeight); } catch {}
+    const iframe = playerRef.current?.getIframe?.();
+    if (iframe) {
+      iframe.style.width = '100%';
+      iframe.style.height = '100%';
+      iframe.style.display = 'block';
+    }
+  }, [videoExpanded, showVideo]);
 
   // Update volume when slider changes
   useEffect(() => {
@@ -440,22 +536,81 @@ export default function PomodoroTimer() {
         if (parsed.volume !== undefined) setVolume(parsed.volume);
         if (parsed.playlist && Array.isArray(parsed.playlist)) setPlaylist(parsed.playlist);
         if (parsed.currentIndex !== undefined) setCurrentIndex(parsed.currentIndex);
+        if (parsed.mode === 'work' || parsed.mode === 'break') setMode(parsed.mode);
+        if (parsed.isRunning) setIsRunning(true);
+        if (parsed.targetEpoch) {
+          const now = Date.now();
+          let remaining = Math.round((parsed.targetEpoch - now) / 1000);
+          if (parsed.isRunning && remaining <= 0) {
+            // Process missed cycles (simple catch-up)
+            let m: 'work' | 'break' = parsed.mode || 'work';
+            let safety = 12;
+            while (remaining <= 0 && safety-- > 0) {
+              m = m === 'work' ? 'break' : 'work';
+              const dur = (m === 'work' ? (parsed.workMinutes || WORK_MIN) : (parsed.breakMinutes || BREAK_MIN)) * 60;
+              parsed.targetEpoch += dur * 1000;
+              remaining = Math.round((parsed.targetEpoch - now) / 1000);
+            }
+            setMode(m);
+          }
+          if (parsed.isRunning && remaining > 0) {
+            setSecondsLeft(remaining);
+            setTargetEpoch(parsed.targetEpoch);
+          } else if (!parsed.isRunning) {
+            setSecondsLeft((parsed.mode === 'work' ? (parsed.workMinutes || WORK_MIN) : (parsed.breakMinutes || BREAK_MIN)) * 60);
+          }
+        }
+  if (parsed.repeat !== undefined) setRepeat(!!parsed.repeat);
+  if (parsed.showVideo !== undefined) setShowVideo(!!parsed.showVideo);
+  if (typeof parsed.playerCurrentTime === 'number') resumeTimeRef.current = parsed.playerCurrentTime;
+  if (typeof parsed.playerIsPlaying === 'boolean') resumeShouldPlayRef.current = parsed.playerIsPlaying;
       }
     } catch {}
   }, []);
 
+  // Persist stable settings (not rapidly changing timestamp) whenever they change
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const data = {
-      workMinutes,
-      breakMinutes,
-      autoPlayMusic,
-      volume,
-      playlist,
-      currentIndex
+    try {
+      const raw = localStorage.getItem('pomodoroSettings');
+      const existing = raw ? JSON.parse(raw) : {};
+      const data = {
+        ...existing,
+        workMinutes,
+        breakMinutes,
+        autoPlayMusic,
+        volume,
+        playlist,
+        currentIndex,
+        mode,
+        isRunning,
+        targetEpoch,
+        repeat,
+        showVideo
+      };
+      localStorage.setItem('pomodoroSettings', JSON.stringify(data));
+    } catch {}
+  }, [workMinutes, breakMinutes, autoPlayMusic, volume, playlist, currentIndex, mode, isRunning, targetEpoch, repeat, showVideo]);
+
+  // Throttled persistence of playback position & playing state
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let lastSaved = 0;
+    const save = () => {
+      const now = Date.now();
+      if (now - lastSaved < 5000 && isPlayingAudio) return; // throttle while playing
+      lastSaved = now;
+      try {
+        const raw = localStorage.getItem('pomodoroSettings');
+        const existing = raw ? JSON.parse(raw) : {};
+        existing.playerCurrentTime = currentTimeSec;
+        existing.playerIsPlaying = isPlayingAudio;
+        existing.currentIndex = currentIndex; // ensure synced
+        localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
+      } catch {}
     };
-    try { localStorage.setItem('pomodoroSettings', JSON.stringify(data)); } catch {}
-  }, [workMinutes, breakMinutes, autoPlayMusic, volume, playlist, currentIndex]);
+    save();
+  }, [currentTimeSec, isPlayingAudio, currentIndex]);
 
   function formatVideoDuration(sec?: number) {
     if (!sec && sec !== 0) return '—';
@@ -641,13 +796,27 @@ export default function PomodoroTimer() {
                 <span>Track: {formatVideoDuration(currentTimeSec)} / {durationSec ? formatVideoDuration(durationSec) : '—'}</span>
                 <span>Status: {playerReady ? 'Ready' : 'Loading'}</span>
               </div>
+              <div className="mt-3 space-y-2">
+                {/* Inline host for iframe when expanded */}
+                <div ref={inlineHostRef} className={`${showVideo && videoExpanded ? 'block' : 'hidden'} rounded border border-[color:var(--border)] overflow-hidden bg-black relative`}></div>
+                {/* Thumbnail placeholder while collapsed (no iframe mounted) */}
+                {showVideo && !videoExpanded && (
+                  <div className="relative w-[160px] rounded border border-[color:var(--border)] overflow-hidden bg-black group cursor-pointer" onClick={() => setVideoExpanded(true)}>
+                    <div className="aspect-video w-[160px] bg-gradient-to-br from-zinc-700 to-zinc-900 flex items-center justify-center text-xs text-white/80">
+                      Video hidden
+                    </div>
+                    <button
+                      type="button"
+                      className="absolute inset-0 flex items-center justify-center text-[10px] font-medium bg-black/50 opacity-0 group-hover:opacity-100 transition"
+                    >Expand</button>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
       </div>
-      <div className={showVideo ? 'mt-4 rounded overflow-hidden border border-[color:var(--border)] aspect-video w-full relative' : ''}>
-        <div id="yt-audio-player" style={showVideo ? { position: 'absolute', inset: 0 } : { position: 'absolute', width: 0, height: 0, overflow: 'hidden', left: '-9999px' }} aria-hidden={showVideo ? 'false' : 'true'} />
-      </div>
+  {/* Global player container persists playback off-screen when hidden */}
 
   <audio ref={audioRef} preload="auto">
         <source src="data:audio/mp3;base64,//uQZAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCA/////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" type="audio/mp3" />
