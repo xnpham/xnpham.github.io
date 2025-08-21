@@ -14,6 +14,49 @@ type Task = {
   startedAt?: number; // epoch ms when current run began
 };
 
+type Session = {
+  id: string;
+  taskId: string;
+  taskName: string;
+  category?: string;
+  start: number; // epoch ms
+  end: number;   // epoch ms
+  durationMs: number;
+};
+
+type DailyAdjustments = Record<string, number>; // date (YYYY-MM-DD) -> adjustmentMs (can be negative)
+
+function loadSessions(): Session[] {
+  if (typeof window === 'undefined') return [];
+  try { const raw = localStorage.getItem('learningSessions'); if (!raw) return []; return JSON.parse(raw); } catch { return []; }
+}
+function saveSessions(list: Session[]) {
+  if (typeof window === 'undefined') return; try { localStorage.setItem('learningSessions', JSON.stringify(list)); } catch {}
+}
+function addSession(s: Session) { const list = loadSessions(); list.push(s); saveSessions(list); }
+
+function startOfDay(ts: number) { const d = new Date(ts); d.setHours(0,0,0,0); return d.getTime(); }
+function isSameDay(a: number, b: number) { return startOfDay(a) === startOfDay(b); }
+function todayKey() { return new Date().toISOString().slice(0,10); }
+
+function computeDailyTotalMs(sessions: Session[], dayTs: number) {
+  return sessions.filter(s => isSameDay(s.start, dayTs)).reduce((acc, s) => acc + s.durationMs, 0);
+}
+function computeStreak(sessions: Session[], dailyGoalMin: number, adjustments: DailyAdjustments) {
+  const goalMs = dailyGoalMin * 60 * 1000;
+  let streak = 0;
+  const ONE_DAY = 86400000;
+  let cursor = startOfDay(Date.now());
+  while (true) {
+    const dayTotal = computeDailyTotalMs(sessions, cursor);
+    const dayKey = new Date(cursor).toISOString().slice(0,10);
+    const adj = adjustments[dayKey] || 0;
+    const total = dayTotal + adj;
+    if (total >= goalMs && goalMs > 0) { streak++; cursor -= ONE_DAY; } else break;
+  }
+  return streak;
+}
+
 function formatDuration(ms: number) {
   const totalSec = Math.floor(ms / 1000);
   const h = Math.floor(totalSec / 3600).toString().padStart(2, '0');
@@ -28,7 +71,15 @@ export default function LearningPage() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const rafRef = useRef<number | null>(null);
   const [loaded, setLoaded] = useState(false); // indicates initial localStorage load complete
+  const [dailyGoalMinutes, setDailyGoalMinutes] = useState<number>(120);
+  const [dailyTotalMs, setDailyTotalMs] = useState(0);
+  const [streak, setStreak] = useState(0);
+  const [adjustments, setAdjustments] = useState<DailyAdjustments>({});
+  const today = todayKey();
+  const todayAdjustmentMs = adjustments[today] || 0;
+  const [tempAdjustmentMin, setTempAdjustmentMin] = useState<number>(0); // input buffer
   const { upsertProcess, removeProcess, registerActionRunner } = useActivity();
+  const [showTodayBreakdown, setShowTodayBreakdown] = useState(false);
   const activityProcessId = 'learning-active-task';
 
   // Load persisted state
@@ -46,6 +97,10 @@ export default function LearningPage() {
   if (savedActive) setActiveId(savedActive);
       const savedTable = localStorage.getItem('learningTasksRawTable');
       if (savedTable) setRawTable(savedTable);
+  const goalRaw = localStorage.getItem('learningDailyGoalMinutes');
+  if (goalRaw) setDailyGoalMinutes(Number(goalRaw) || 0);
+  const adjRaw = localStorage.getItem('learningDailyAdjustments');
+  if (adjRaw) { try { setAdjustments(JSON.parse(adjRaw)); } catch {} }
   setLoaded(true);
     } catch {}
   }, []);
@@ -59,6 +114,27 @@ export default function LearningPage() {
     if (!loaded || typeof window === 'undefined') return;
     try { localStorage.setItem('learningTasksRawTable', rawTable); } catch {}
   }, [rawTable, loaded]);
+
+  // Persist goal
+  useEffect(() => { if (!loaded) return; try { localStorage.setItem('learningDailyGoalMinutes', String(dailyGoalMinutes)); } catch {} }, [dailyGoalMinutes, loaded]);
+  // Persist adjustments
+  useEffect(() => { if (!loaded) return; try { localStorage.setItem('learningDailyAdjustments', JSON.stringify(adjustments)); } catch {} }, [adjustments, loaded]);
+
+  // Recompute metrics when sessions or goal change
+  const recomputeMetrics = useCallback(() => {
+    const sessions = loadSessions();
+    const nowTs = Date.now();
+    let base = computeDailyTotalMs(sessions, nowTs);
+    const active = tasks.find(t => t.running && t.startedAt);
+    if (active && active.startedAt && isSameDay(active.startedAt, nowTs)) {
+      base += nowTs - active.startedAt;
+    }
+    const adjMs = adjustments[today] || 0;
+    setDailyTotalMs(base + adjMs);
+    setStreak(computeStreak(sessions, dailyGoalMinutes, adjustments));
+  }, [dailyGoalMinutes, adjustments, today, tasks]);
+
+  useEffect(() => { if (loaded) recomputeMetrics(); }, [loaded, tasks, dailyGoalMinutes, recomputeMetrics]);
 
   // Cross-tab sync via storage events
   useEffect(() => {
@@ -134,31 +210,86 @@ export default function LearningPage() {
       // pause others
       if (t.running && t.startedAt) {
         const delta = Date.now() - t.startedAt;
+    // log session for previous running task
+    addSession({ id: crypto.randomUUID(), taskId: t.id, taskName: t.name, category: t.category, start: t.startedAt, end: Date.now(), durationMs: delta });
         return { ...t, running: false, totalMs: t.totalMs + delta, startedAt: undefined };
       }
       return t;
     }));
     setActiveId(id);
   try { localStorage.setItem('learningActiveId', id); } catch {}
+  setTimeout(recomputeMetrics, 0);
   }
 
   function pauseTask(id: string) {
     setTasks(ts => ts.map(t => {
       if (t.id === id && t.running && t.startedAt) {
         const delta = Date.now() - t.startedAt;
+    addSession({ id: crypto.randomUUID(), taskId: t.id, taskName: t.name, category: t.category, start: t.startedAt, end: Date.now(), durationMs: delta });
         return { ...t, running: false, totalMs: t.totalMs + delta, startedAt: undefined };
       }
       return t;
     }));
     if (activeId === id) setActiveId(null);
   try { localStorage.removeItem('learningActiveId'); } catch {}
+  setTimeout(recomputeMetrics, 0);
   }
 
   function resetTask(id: string) {
-    setTasks(ts => ts.map(t => t.id === id ? { ...t, totalMs: 0, running: false, startedAt: undefined } : t));
+    setTasks(ts => ts.map(t => {
+      if (t.id === id) {
+        if (t.running && t.startedAt) {
+          const delta = Date.now() - t.startedAt;
+          addSession({ id: crypto.randomUUID(), taskId: t.id, taskName: t.name, category: t.category, start: t.startedAt, end: Date.now(), durationMs: delta });
+        }
+        return { ...t, totalMs: 0, running: false, startedAt: undefined };
+      }
+      return t;
+    }));
     if (activeId === id) setActiveId(null);
     try { localStorage.removeItem('learningActiveId'); } catch {}
+    setTimeout(recomputeMetrics, 0);
   }
+
+  function applyTodayAdjustment() {
+    setAdjustments(prev => ({ ...prev, [today]: tempAdjustmentMin * 60000 }));
+    // Recompute after state updates flush
+    setTimeout(recomputeMetrics, 0);
+  }
+
+  function clearTodayAdjustment() {
+    setAdjustments(prev => { const copy = { ...prev }; delete copy[today]; return copy; });
+    setTempAdjustmentMin(0);
+    setTimeout(recomputeMetrics, 0);
+  }
+
+  // Removed zeroToday in favor of a unified full reset (resetAllDurations) triggered from the Quick button.
+
+  function resetAllDurations() {
+    // Stop any running task without logging a session (intentional full reset)
+    setTasks(ts => ts.map(t => ({ ...t, running: false, startedAt: undefined, totalMs: 0 })));
+    setActiveId(null);
+    try { localStorage.removeItem('learningActiveId'); } catch {}
+    // Clear all stored sessions so daily metrics also reset to 0 (unless adjustments applied)
+    try { localStorage.setItem('learningSessions', '[]'); } catch {}
+    setTimeout(recomputeMetrics, 0);
+  }
+
+  const todayTaskBreakdown = useCallback(() => {
+    const sessions = loadSessions();
+    const map: Record<string, number> = {};
+    const todaySessions = sessions.filter(s => isSameDay(s.start, Date.now()));
+    todaySessions.forEach(s => { map[s.taskId] = (map[s.taskId] || 0) + s.durationMs; });
+    tasks.forEach(t => {
+      if (t.running && t.startedAt && isSameDay(t.startedAt, Date.now())) {
+        map[t.id] = (map[t.id] || 0) + (Date.now() - t.startedAt);
+      }
+    });
+    return Object.entries(map).map(([taskId, ms]) => {
+      const task = tasks.find(t => t.id === taskId);
+      return { id: taskId, name: task?.name || task?.number?.toString() || 'Task', ms };
+    }).sort((a,b) => b.ms - a.ms);
+  }, [tasks]);
 
   // Persist activeId changes
   useEffect(() => {
@@ -242,9 +373,49 @@ export default function LearningPage() {
 
   return (
     <section className="space-y-6">
+      <div className="card p-4 space-y-3">
+        <h2 className="text-lg font-semibold flex items-center gap-3">Daily Focus
+          <span className="text-sm font-normal text-[color:var(--muted)]">Goal {dailyGoalMinutes}m</span>
+        </h2>
+        <div className="flex flex-wrap items-end gap-6">
+          <div>
+            <div className="text-3xl font-bold tabular-nums">{Math.round(dailyTotalMs/60000)}m</div>
+            <div className="text-xs uppercase tracking-wide text-[color:var(--muted)]">Today</div>
+          </div>
+          <div>
+            <div className="text-3xl font-bold tabular-nums">{streak}</div>
+            <div className="text-xs uppercase tracking-wide text-[color:var(--muted)]">Streak</div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase tracking-wide text-[color:var(--muted)]">Daily Goal (min)</label>
+            <input type="number" min={0} className="w-24 rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm"
+              value={dailyGoalMinutes} onChange={e=>setDailyGoalMinutes(Number(e.target.value))} />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase tracking-wide text-[color:var(--muted)]">Adjustment (min)</label>
+            <div className="flex gap-2 items-center">
+              <input type="number" className="w-24 rounded border border-[color:var(--border)] bg-transparent px-2 py-1 text-sm" value={tempAdjustmentMin} onChange={e=>setTempAdjustmentMin(Number(e.target.value))} />
+              <button type="button" onClick={applyTodayAdjustment} className="px-2 py-1 text-[10px] rounded border border-[color:var(--border)] bg-white/5 hover:bg-white/10">Apply</button>
+              {todayAdjustmentMs !== 0 && <button type="button" onClick={clearTodayAdjustment} className="px-2 py-1 text-[10px] rounded border border-[color:var(--border)] bg-white/5 hover:bg-white/10">Clear</button>}
+            </div>
+          </div>
+          <div className="flex-1 min-w-[200px]">
+            <div className="w-full h-2 rounded bg-black/30 overflow-hidden">
+              <div className="h-full bg-blue-600 transition-all" style={{ width: `${Math.min(100, (dailyTotalMs/60000)/ (dailyGoalMinutes||1) * 100)}%` }} />
+            </div>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] uppercase tracking-wide text-[color:var(--muted)]">Quick</label>
+            <button type="button" onClick={resetAllDurations} className="px-2 py-1 text-[10px] rounded border border-[color:var(--border)] bg-white/5 hover:bg-white/10">Reset All Durations</button>
+          </div>
+        </div>
+      </div>
       <div className="card space-y-4">
         <h1 className="text-2xl md:text-3xl font-semibold">Learning Helper</h1>
         <p className="text-[color:var(--muted)] text-sm">Paste or edit your markdown task table below, then Parse. Track time per task with start/pause; data persists locally.</p>
+        <div className="flex flex-wrap gap-2">
+          <a href="/learning/dashboard" className="px-3 py-1 text-xs rounded border border-[color:var(--border)] bg-white/5 hover:bg-white/10">Open Dashboard →</a>
+        </div>
         <textarea
           className="w-full min-h-40 text-sm font-mono rounded border border-[color:var(--border)] bg-[color:var(--surface)] p-2 resize-y"
           value={rawTable}
@@ -255,6 +426,20 @@ export default function LearningPage() {
           <button type="button" onClick={exportTable} className="px-3 py-1 text-xs rounded border border-[color:var(--border)] bg-white/5 hover:bg-white/10">Export Durations → Table</button>
         </div>
       </div>
+      <p className="text-[10px] leading-relaxed text-[color:var(--muted)] mt-1">
+        Daily total includes completed sessions plus currently running task time (only if started today). Table durations are cumulative overall, so sums can differ. <button type="button" onClick={() => setShowTodayBreakdown(s=>!s)} className="underline hover:no-underline">{showTodayBreakdown? 'Hide':'Show'} breakdown</button>
+      </p>
+      {showTodayBreakdown && (
+        <div className="mt-2 rounded border border-[color:var(--border)] p-2 bg-white/5 max-w-xl">
+          <div className="text-[10px] uppercase tracking-wide mb-1 opacity-70">Today Task Breakdown</div>
+          <ul className="space-y-0.5 text-xs">
+            {todayTaskBreakdown().map(r => (
+              <li key={r.id} className="flex justify-between tabular-nums"><span className="truncate max-w-[160px]" title={r.name}>{r.name}</span><span>{formatDuration(r.ms)}</span></li>
+            ))}
+            {todayTaskBreakdown().length === 0 && <li className="opacity-60">No focus yet today.</li>}
+          </ul>
+        </div>
+      )}
       <div className="card space-y-4">
         <h2 className="text-xl font-semibold">Tasks</h2>
         {tasks.length === 0 && <p className="text-sm text-[color:var(--muted)]">No tasks parsed yet.</p>}
