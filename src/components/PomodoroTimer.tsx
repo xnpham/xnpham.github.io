@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Button } from '@/components/Button';
+import { useActivity } from '@/components/ActivityProvider';
 
 // --- Minimal YouTube IFrame API typings (subset we use) ---
 interface YTVideoData { video_id?: string; title?: string }
@@ -41,7 +42,10 @@ interface YTPlayerOptions {
   };
 }
 declare global {
-  interface Window { YT?: { Player: new (elementId: string, options: YTPlayerOptions) => YTPlayer } }
+  interface Window {
+    YT?: { Player: new (elementId: string, options: YTPlayerOptions) => YTPlayer };
+    __globalYTPlayer?: YTPlayer;
+  }
 }
 
 // Basic Pomodoro defaults
@@ -87,12 +91,16 @@ export default function PomodoroTimer() {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [showVideo, setShowVideo] = useState(false);
   const [videoExpanded, setVideoExpanded] = useState(true); // true = full size, false = mini
+  const { upsertProcess, removeProcess, registerActionRunner } = useActivity();
+  const processId = 'pomodoro-main';
   const inlineHostRef = useRef<HTMLDivElement | null>(null);
   // Resume support
   const resumeTimeRef = useRef<number | null>(null);
   const resumeShouldPlayRef = useRef<boolean>(false);
   // Key comprised only of video IDs to avoid effect retriggers on title/duration updates
   const videoIdKey = playlist.map(p => p.videoId).join(',');
+  // Initial settings loaded flag
+  const [loaded, setLoaded] = useState(false);
 
   // Create a global container for the YouTube player (persists across page navigation)
   useEffect(() => {
@@ -118,20 +126,20 @@ export default function PomodoroTimer() {
     }
   }, []);
 
-  // Update secondsLeft (and adjust target) when durations change
+  // Update secondsLeft (and adjust target) when durations change (after initial load)
   useEffect(() => {
+    if (!loaded) return;
     const base = (mode === 'work' ? workMinutes : breakMinutes) * 60;
     if (!isRunning) {
       setSecondsLeft(base);
       return;
     }
-    // Clamp remaining to new base and reset targetEpoch
     setSecondsLeft(prev => {
       const clamped = Math.min(prev, base);
       setTargetEpoch(Date.now() + clamped * 1000);
       return clamped;
     });
-  }, [workMinutes, breakMinutes, mode, isRunning]);
+  }, [loaded, workMinutes, breakMinutes, mode, isRunning]);
 
   // Main ticking effect (timestamp based for background accuracy)
   useEffect(() => {
@@ -172,6 +180,60 @@ export default function PomodoroTimer() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [isRunning, targetEpoch, mode, workMinutes, breakMinutes, autoPlayMusic, playlist.length]);
 
+  // Publish activity updates (throttled by dependency changes)
+  useEffect(() => {
+    upsertProcess({
+      id: processId,
+      type: 'pomodoro',
+      label: 'Pomodoro Timer',
+      status: isRunning ? 'running' : 'paused',
+      meta: { secondsLeft, mode },
+      actions: [
+        {
+          id: 'toggle',
+          label: isRunning ? 'Pause' : 'Resume',
+          kind: 'primary',
+          run: () => toggleRun()
+        },
+        {
+          id: 'reset',
+          label: 'Reset',
+          kind: 'secondary',
+          run: () => reset()
+        }
+      ],
+      updatedAt: Date.now()
+    });
+    // Register runners (idempotent)
+    registerActionRunner(processId, 'toggle', () => toggleRun());
+    registerActionRunner(processId, 'reset', () => reset());
+    if (!isRunning && secondsLeft === workMinutes * 60 && mode === 'work') {
+      // optionally could remove when fully reset; keep for visibility
+    }
+    return () => { /* no-op cleanup */ };
+  }, [secondsLeft, mode, isRunning, upsertProcess, workMinutes, registerActionRunner]);
+
+  // Publish video/audio playback as a separate process
+  useEffect(() => {
+    if (playlist.length && playerReady) {
+      const current = playlist[currentIndex];
+      const label = current?.title || current?.videoId || 'Track';
+      const progressPct = durationSec ? Math.min(100, Math.max(0, (currentTimeSec / durationSec) * 100)) : 0;
+      upsertProcess({
+        id: 'pomodoro-video',
+        type: 'video',
+        label,
+        status: isPlayingAudio ? 'playing' : 'paused',
+        meta: { title: label, progress: progressPct },
+        updatedAt: Date.now()
+      });
+    } else {
+      removeProcess('pomodoro-video');
+    }
+  }, [playlist, currentIndex, playerReady, isPlayingAudio, currentTimeSec, durationSec, upsertProcess, removeProcess]);
+
+  // Note: We intentionally do NOT remove the process on unmount so Activity panel can still display it.
+
   const progress = () => {
     const total = (mode === 'work' ? workMinutes : breakMinutes) * 60;
     return 100 - (secondsLeft / total) * 100;
@@ -183,8 +245,26 @@ export default function PomodoroTimer() {
       if (next) {
         // starting / resuming
         setTargetEpoch(Date.now() + secondsLeft * 1000);
+        // Clear remainingSeconds from storage when resuming
+        try {
+          const raw = localStorage.getItem('pomodoroSettings');
+            const existing = raw ? JSON.parse(raw) : {};
+            delete existing.remainingSeconds;
+            existing.isRunning = true;
+            existing.targetEpoch = Date.now() + secondsLeft * 1000;
+            localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
+        } catch {}
       } else {
         setTargetEpoch(null);
+        // Persist remainingSeconds when pausing
+        try {
+          const raw = localStorage.getItem('pomodoroSettings');
+          const existing = raw ? JSON.parse(raw) : {};
+          existing.isRunning = false;
+          existing.targetEpoch = null;
+          existing.remainingSeconds = secondsLeft;
+          localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
+        } catch {}
       }
       return next;
     });
@@ -248,6 +328,22 @@ export default function PomodoroTimer() {
     if (!videoId) return;
     function createOrLoad() {
       if (!window.YT || !window.YT.Player) return;
+      // Reuse global player if it already exists (from previous page visit)
+      if (!playerRef.current && window.__globalYTPlayer) {
+        playerRef.current = window.__globalYTPlayer;
+        try {
+          const currentVideoId = playerRef.current?.getVideoData?.()?.video_id;
+          if (currentVideoId !== videoId) {
+            playerRef.current.loadVideoById(videoId);
+            fetchMeta();
+          }
+          playerRef.current.setVolume(volume);
+          setPlayerReady(true);
+          const state = playerRef.current.getPlayerState?.();
+          setIsPlayingAudio(state === 1);
+          return; // done
+        } catch {}
+      }
       if (!playerRef.current) {
         playerRef.current = new window.YT.Player('yt-audio-player', {
           height: '0',
@@ -269,10 +365,13 @@ export default function PomodoroTimer() {
               // Resume position if available
               if (resumeTimeRef.current != null) {
                 try { playerRef.current?.seekTo(resumeTimeRef.current, true); } catch {}
+          setLoaded(true);
               }
               if (resumeShouldPlayRef.current) {
                 try { playerRef.current?.playVideo(); setIsPlayingAudio(true); } catch {}
               }
+              // Store global reference for reuse after navigation
+              window.__globalYTPlayer = playerRef.current || e.target;
             },
             onStateChange: (e) => {
               if (e.data === 0) { // ended
@@ -345,6 +444,25 @@ export default function PomodoroTimer() {
       try { playerRef.current?.setSize(0, 0); } catch {}
     }
   }, [showVideo, videoExpanded]);
+
+  // On unmount, always move iframe back to global container before the inline host is removed.
+  useEffect(() => {
+    return () => {
+      try {
+        if (typeof document === 'undefined') return;
+        const globalContainer = document.getElementById('global-yt-player-container');
+        const playerDiv = document.getElementById('yt-audio-player');
+        if (globalContainer && playerDiv && playerDiv.parentElement !== globalContainer) {
+          globalContainer.appendChild(playerDiv);
+          globalContainer.style.position = 'absolute';
+          globalContainer.style.width = '0px';
+          globalContainer.style.height = '0px';
+          globalContainer.style.left = '-9999px';
+          try { playerRef.current?.setSize(0, 0); } catch {}
+        }
+      } catch {}
+    };
+  }, []);
 
   // Resize player when expansion toggles (only if expanded)
   useEffect(() => {
@@ -523,7 +641,7 @@ export default function PomodoroTimer() {
   }
   function handleDragEnd() { dragIndexRef.current = null; }
 
-  // LocalStorage persistence
+  // Initial load (once)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -538,11 +656,12 @@ export default function PomodoroTimer() {
         if (parsed.currentIndex !== undefined) setCurrentIndex(parsed.currentIndex);
         if (parsed.mode === 'work' || parsed.mode === 'break') setMode(parsed.mode);
         if (parsed.isRunning) setIsRunning(true);
-        if (parsed.targetEpoch) {
+        if (parsed.remainingSeconds && !parsed.isRunning) {
+          setSecondsLeft(parsed.remainingSeconds);
+        } else if (parsed.targetEpoch) {
           const now = Date.now();
           let remaining = Math.round((parsed.targetEpoch - now) / 1000);
           if (parsed.isRunning && remaining <= 0) {
-            // Process missed cycles (simple catch-up)
             let m: 'work' | 'break' = parsed.mode || 'work';
             let safety = 12;
             while (remaining <= 0 && safety-- > 0) {
@@ -560,21 +679,21 @@ export default function PomodoroTimer() {
             setSecondsLeft((parsed.mode === 'work' ? (parsed.workMinutes || WORK_MIN) : (parsed.breakMinutes || BREAK_MIN)) * 60);
           }
         }
-  if (parsed.repeat !== undefined) setRepeat(!!parsed.repeat);
-  if (parsed.showVideo !== undefined) setShowVideo(!!parsed.showVideo);
-  if (typeof parsed.playerCurrentTime === 'number') {
-    resumeTimeRef.current = parsed.playerCurrentTime;
-    // Reflect immediately in UI before player instantiates
-    setCurrentTimeSec(parsed.playerCurrentTime);
-  }
-  if (typeof parsed.playerIsPlaying === 'boolean') resumeShouldPlayRef.current = parsed.playerIsPlaying;
+        if (parsed.repeat !== undefined) setRepeat(!!parsed.repeat);
+        if (parsed.showVideo !== undefined) setShowVideo(!!parsed.showVideo);
+        if (typeof parsed.playerCurrentTime === 'number') {
+          resumeTimeRef.current = parsed.playerCurrentTime;
+          setCurrentTimeSec(parsed.playerCurrentTime);
+        }
+        if (typeof parsed.playerIsPlaying === 'boolean') resumeShouldPlayRef.current = parsed.playerIsPlaying;
       }
     } catch {}
+    setLoaded(true);
   }, []);
 
   // Persist stable settings (not rapidly changing timestamp) whenever they change
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (!loaded || typeof window === 'undefined') return;
     try {
       const raw = localStorage.getItem('pomodoroSettings');
       const existing = raw ? JSON.parse(raw) : {};
@@ -590,11 +709,47 @@ export default function PomodoroTimer() {
         isRunning,
         targetEpoch,
         repeat,
-        showVideo
+    showVideo,
+    ...(isRunning ? { remainingSeconds: undefined } : { remainingSeconds: secondsLeft })
       };
       localStorage.setItem('pomodoroSettings', JSON.stringify(data));
     } catch {}
-  }, [workMinutes, breakMinutes, autoPlayMusic, volume, playlist, currentIndex, mode, isRunning, targetEpoch, repeat, showVideo]);
+  }, [loaded, workMinutes, breakMinutes, autoPlayMusic, volume, playlist, currentIndex, mode, isRunning, targetEpoch, repeat, showVideo, secondsLeft]);
+
+  // Cross-tab sync (adopt passive changes)
+  useEffect(() => {
+    if (!loaded || typeof window === 'undefined') return;
+    const handler = (e: StorageEvent) => {
+      if (e.key !== 'pomodoroSettings' || !e.newValue) return;
+      try {
+        const parsed = JSON.parse(e.newValue);
+        if (!isRunning && parsed) { // adopt timer state only if not running locally
+          if (typeof parsed.workMinutes === 'number') setWorkMinutes(parsed.workMinutes);
+          if (typeof parsed.breakMinutes === 'number') setBreakMinutes(parsed.breakMinutes);
+          if (parsed.mode === 'work' || parsed.mode === 'break') setMode(parsed.mode);
+          if (!parsed.isRunning && parsed.remainingSeconds) {
+            setSecondsLeft(parsed.remainingSeconds);
+            setTargetEpoch(null);
+            setIsRunning(false);
+          } else if (parsed.targetEpoch && parsed.isRunning) {
+            const now = Date.now();
+            const remaining = Math.max(0, Math.round((parsed.targetEpoch - now) / 1000));
+            setSecondsLeft(remaining || (parsed.mode === 'work' ? parsed.workMinutes*60 : parsed.breakMinutes*60));
+            setTargetEpoch(parsed.isRunning ? parsed.targetEpoch : null);
+            setIsRunning(!!parsed.isRunning);
+          }
+        }
+        if (Array.isArray(parsed.playlist)) setPlaylist(parsed.playlist);
+        if (typeof parsed.currentIndex === 'number') setCurrentIndex(parsed.currentIndex);
+        if (typeof parsed.volume === 'number') setVolume(parsed.volume);
+        if (typeof parsed.autoPlayMusic === 'boolean') setAutoPlayMusic(parsed.autoPlayMusic);
+        if (typeof parsed.repeat === 'boolean') setRepeat(parsed.repeat);
+        if (typeof parsed.showVideo === 'boolean') setShowVideo(parsed.showVideo);
+      } catch {}
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, [loaded, isRunning]);
 
   // Throttled persistence of playback position & playing state
   useEffect(() => {

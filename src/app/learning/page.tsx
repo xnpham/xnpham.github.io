@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useActivity } from '@/components/ActivityProvider';
 
 type Task = {
   id: string;
@@ -26,6 +27,9 @@ export default function LearningPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const rafRef = useRef<number | null>(null);
+  const [loaded, setLoaded] = useState(false); // indicates initial localStorage load complete
+  const { upsertProcess, removeProcess, registerActionRunner } = useActivity();
+  const activityProcessId = 'learning-active-task';
 
   // Load persisted state
   useEffect(() => {
@@ -38,20 +42,37 @@ export default function LearningPage() {
         const running = parsed.find(t => t.running);
         if (running) setActiveId(running.id);
       }
+  const savedActive = localStorage.getItem('learningActiveId');
+  if (savedActive) setActiveId(savedActive);
       const savedTable = localStorage.getItem('learningTasksRawTable');
       if (savedTable) setRawTable(savedTable);
+  setLoaded(true);
     } catch {}
   }, []);
 
-  // Persist tasks + raw input
+  // Persist tasks + raw input (skip until initial load to avoid overwriting saved data)
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (!loaded || typeof window === 'undefined') return;
     try { localStorage.setItem('learningTasks', JSON.stringify(tasks)); } catch {}
-  }, [tasks]);
+  }, [tasks, loaded]);
+  useEffect(() => {
+    if (!loaded || typeof window === 'undefined') return;
+    try { localStorage.setItem('learningTasksRawTable', rawTable); } catch {}
+  }, [rawTable, loaded]);
+
+  // Cross-tab sync via storage events
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    try { localStorage.setItem('learningTasksRawTable', rawTable); } catch {}
-  }, [rawTable]);
+    const handler = (e: StorageEvent) => {
+      if (e.key === 'learningTasks' && e.newValue) {
+        try { const parsed: Task[] = JSON.parse(e.newValue); setTasks(parsed); } catch {}
+      } else if (e.key === 'learningTasksRawTable' && e.newValue) {
+        setRawTable(e.newValue);
+      }
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, []);
 
   const parseTable = useCallback(() => {
     const lines = rawTable.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -118,6 +139,7 @@ export default function LearningPage() {
       return t;
     }));
     setActiveId(id);
+  try { localStorage.setItem('learningActiveId', id); } catch {}
   }
 
   function pauseTask(id: string) {
@@ -129,12 +151,82 @@ export default function LearningPage() {
       return t;
     }));
     if (activeId === id) setActiveId(null);
+  try { localStorage.removeItem('learningActiveId'); } catch {}
   }
 
   function resetTask(id: string) {
     setTasks(ts => ts.map(t => t.id === id ? { ...t, totalMs: 0, running: false, startedAt: undefined } : t));
     if (activeId === id) setActiveId(null);
+    try { localStorage.removeItem('learningActiveId'); } catch {}
   }
+
+  // Persist activeId changes
+  useEffect(() => {
+    if (!loaded) return;
+    if (activeId) {
+      try { localStorage.setItem('learningActiveId', activeId); } catch {}
+    } else {
+      try { localStorage.removeItem('learningActiveId'); } catch {}
+    }
+  }, [activeId, loaded]);
+
+  // Publish active task to Activity panel
+  useEffect(() => {
+    const active = tasks.find(t => t.id === activeId);
+    if (active) {
+      const elapsed = active.running && active.startedAt ? active.totalMs + (Date.now() - active.startedAt) : active.totalMs;
+      upsertProcess({
+        id: activityProcessId,
+        type: 'generic',
+        label: active.name || `Task #${active.number}`,
+        status: active.running ? 'running' : 'paused',
+        meta: {
+          number: active.number,
+          category: active.category,
+          urgency: active.urgency,
+          elapsedMs: elapsed
+        },
+        actions: [
+          {
+            id: 'toggle',
+            label: active.running ? 'Pause' : 'Resume',
+            kind: 'primary',
+            run: () => active.running ? pauseTask(active.id) : startTask(active.id)
+          },
+          {
+            id: 'reset',
+            label: 'Reset',
+            kind: 'secondary',
+            run: () => resetTask(active.id)
+          }
+        ],
+        updatedAt: Date.now()
+      });
+    // Register current runners
+    registerActionRunner(activityProcessId, 'toggle', () => active.running ? pauseTask(active.id) : startTask(active.id));
+    registerActionRunner(activityProcessId, 'reset', () => resetTask(active.id));
+    } else {
+      removeProcess(activityProcessId);
+    }
+  }, [tasks, activeId, upsertProcess, removeProcess, registerActionRunner]);
+
+  // Periodically refresh activity process timestamp & elapsed while running
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const active = tasks.find(t => t.id === activeId);
+      if (!active) return;
+      const elapsed = active.running && active.startedAt ? active.totalMs + (Date.now() - active.startedAt) : active.totalMs;
+      upsertProcess({
+        id: activityProcessId,
+        type: 'generic',
+        label: active.name || `Task #${active.number}`,
+        status: active.running ? 'running' : 'paused',
+        meta: { number: active.number, category: active.category, urgency: active.urgency, elapsedMs: elapsed },
+        updatedAt: Date.now()
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [tasks, activeId, upsertProcess]);
 
   function exportTable() {
     const header = '| No. | Task name | Cat | Urgency | Links | Duration |';
