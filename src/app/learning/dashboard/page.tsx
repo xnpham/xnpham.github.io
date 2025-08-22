@@ -21,18 +21,20 @@ export default function LearningDashboard() {
   useEffect(()=>{ saveGoals(goals); }, [goals]);
 
   const weekStart = startOfWeek();
-  const weekEnd = new Date(weekStart.getTime() + 7*86400000);
-  const weekSessions = useMemo(()=> sessions.filter(s => s.start >= weekStart.getTime() && s.start < weekEnd.getTime()), [sessions, weekStart, weekEnd]);
+    const { weekEnd, weekSessions } = useMemo(() => {
+      const end = new Date(weekStart.getTime() + 7*86400000);
+      return { weekEnd: end, weekSessions: sessions.filter(s => s.start >= weekStart.getTime() && s.start < end.getTime()) };
+    }, [sessions, weekStart]);
 
   const byCategory = useMemo(()=>{
     const m: Record<string, number> = {};
-    weekSessions.forEach(s => { const c = s.category || 'Uncategorized'; m[c] = (m[c]||0) + s.durationMs; });
+  weekSessions.forEach(s => { const c = s.category || 'Uncategorized'; m[c] = (m[c] || 0) + s.durationMs; });
     return m;
   }, [weekSessions]);
 
   const topTasks = useMemo(()=>{
     const aggregate: Record<string, { name: string; ms: number; category?: string; }> = {};
-    weekSessions.forEach(s => { aggregate[s.taskId] = aggregate[s.taskId] || { name: s.taskName, ms: 0, category: s.category }; aggregate[s.taskId].ms += s.durationMs; });
+  weekSessions.forEach(s => { aggregate[s.taskId] = aggregate[s.taskId] || { name: s.taskName, ms: 0, category: s.category }; aggregate[s.taskId].ms += s.durationMs; });
     return Object.entries(aggregate).map(([id, v]) => ({ id, ...v })).sort((a,b)=> b.ms - a.ms).slice(0,10);
   }, [weekSessions]);
 

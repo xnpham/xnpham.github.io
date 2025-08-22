@@ -8,15 +8,28 @@ export type ActivityAction = {
   kind?: 'primary' | 'secondary' | 'danger';
 };
 
+export type ActivityMeta = Record<string, unknown>;
 export type ActivityProcess = {
   id: string;                // unique key
   type: 'pomodoro' | 'video' | 'generic';
   label: string;             // short label
   status?: string;           // running | paused | playing | etc
-  meta?: Record<string, any>; // arbitrary extra fields (secondsLeft, mode, etc)
+  meta?: ActivityMeta;       // arbitrary extra fields (secondsLeft, mode, etc)
   actions?: ActivityAction[]; // interactive controls
   updatedAt: number;         // epoch ms
 };
+
+// Minimal shape of a stored learning task (subset used here)
+interface StoredLearningTask {
+  id: string;
+  name?: string;
+  number?: number;
+  category?: string;
+  urgency?: string;
+  running?: boolean;
+  startedAt?: number;
+  totalMs?: number;
+}
 
 interface ActivityContextValue {
   processes: ActivityProcess[];
@@ -134,11 +147,13 @@ export function ActivityProvider({ children }: { children: React.ReactNode }) {
         const tasksRaw = localStorage.getItem('learningTasks');
         const activeId = localStorage.getItem('learningActiveId');
         if (tasksRaw && activeId) {
-          const tasks = JSON.parse(tasksRaw);
-          const active = Array.isArray(tasks) ? tasks.find((t: any) => t.id === activeId) : null;
+    const parsed = JSON.parse(tasksRaw);
+    const tasks: StoredLearningTask[] = Array.isArray(parsed) ? parsed as StoredLearningTask[] : [];
+    const active = tasks.find((t) => t.id === activeId);
           if (active && active.running) {
             const nowMs = Date.now();
-            const elapsed = active.startedAt ? active.totalMs + (nowMs - active.startedAt) : active.totalMs;
+            const baseTotal = active.totalMs || 0;
+            const elapsed = active.startedAt ? baseTotal + (nowMs - active.startedAt) : baseTotal;
             upsertProcess({
               id: 'learning-active-task',
               type: 'generic',
@@ -155,26 +170,27 @@ export function ActivityProvider({ children }: { children: React.ReactNode }) {
               try {
                 const rawT = localStorage.getItem('learningTasks');
                 if (!rawT) return;
-                const list = JSON.parse(rawT);
-                if (!Array.isArray(list)) return;
-                const now2 = Date.now();
-                const updated = list.map((t: any) => {
+        const parsedList = JSON.parse(rawT);
+        if (!Array.isArray(parsedList)) return;
+        const list: StoredLearningTask[] = parsedList as StoredLearningTask[];
+        const now2 = Date.now();
+        const updated: StoredLearningTask[] = list.map((t) => {
                   if (t.id === activeId) {
                     if (t.running && t.startedAt) {
                       const delta = now2 - t.startedAt;
-                      return { ...t, running: false, totalMs: t.totalMs + delta, startedAt: undefined };
+                      return { ...t, running: false, totalMs: (t.totalMs || 0) + delta, startedAt: undefined };
                     } else {
                       return { ...t, running: true, startedAt: now2 };
                     }
                   }
                   if (t.running && t.startedAt) {
                     const delta = now2 - t.startedAt;
-                    return { ...t, running: false, totalMs: t.totalMs + delta, startedAt: undefined };
+          return { ...t, running: false, totalMs: (t.totalMs||0) + delta, startedAt: undefined };
                   }
                   return t;
                 });
                 localStorage.setItem('learningTasks', JSON.stringify(updated));
-                if (!updated.find((t: any) => t.id === activeId && t.running)) {
+        if (!updated.find((t) => t.id === activeId && t.running)) {
                   localStorage.removeItem('learningActiveId');
                 }
               } catch {}
@@ -183,9 +199,10 @@ export function ActivityProvider({ children }: { children: React.ReactNode }) {
               try {
                 const rawT = localStorage.getItem('learningTasks');
                 if (!rawT) return;
-                const list = JSON.parse(rawT);
-                if (!Array.isArray(list)) return;
-                const updated = list.map((t: any) => t.id === activeId ? { ...t, totalMs: 0, running: false, startedAt: undefined } : t);
+        const parsedList = JSON.parse(rawT);
+        if (!Array.isArray(parsedList)) return;
+        const list: StoredLearningTask[] = parsedList as StoredLearningTask[];
+        const updated: StoredLearningTask[] = list.map((t) => t.id === activeId ? { ...t, totalMs: 0, running: false, startedAt: undefined } : t);
                 localStorage.setItem('learningTasks', JSON.stringify(updated));
                 localStorage.removeItem('learningActiveId');
               } catch {}

@@ -180,6 +180,53 @@ export default function PomodoroTimer() {
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [isRunning, targetEpoch, mode, workMinutes, breakMinutes, autoPlayMusic, playlist.length]);
 
+
+  // Controls defined early so effects can depend on stable references
+  // (duplicate toggleRun/reset removed; definitions appear earlier for effect dependencies)
+    const toggleRun = useCallback(() => {
+      setIsRunning(r => {
+        const next = !r;
+        if (next) {
+          setTargetEpoch(Date.now() + secondsLeft * 1000);
+          try {
+            const raw = localStorage.getItem('pomodoroSettings');
+            const existing = raw ? JSON.parse(raw) : {};
+            delete existing.remainingSeconds;
+            existing.isRunning = true;
+            existing.targetEpoch = Date.now() + secondsLeft * 1000;
+            localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
+          } catch {}
+        } else {
+          setTargetEpoch(null);
+          try {
+            const raw = localStorage.getItem('pomodoroSettings');
+            const existing = raw ? JSON.parse(raw) : {};
+            existing.isRunning = false;
+            existing.targetEpoch = null;
+            existing.remainingSeconds = secondsLeft;
+            localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
+          } catch {}
+        }
+        return next;
+      });
+    }, [secondsLeft]);
+
+    const reset = useCallback(() => {
+      setIsRunning(false);
+      setMode('work');
+      setSecondsLeft(workMinutes * 60);
+      setTargetEpoch(null);
+      try {
+        const raw = localStorage.getItem('pomodoroSettings');
+        const existing = raw ? JSON.parse(raw) : {};
+        existing.isRunning = false;
+        existing.mode = 'work';
+        existing.remainingSeconds = workMinutes * 60;
+        existing.targetEpoch = null;
+        localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
+      } catch {}
+    }, [workMinutes]);
+
   // Publish activity updates (throttled by dependency changes)
   useEffect(() => {
     upsertProcess({
@@ -189,29 +236,15 @@ export default function PomodoroTimer() {
       status: isRunning ? 'running' : 'paused',
       meta: { secondsLeft, mode },
       actions: [
-        {
-          id: 'toggle',
-          label: isRunning ? 'Pause' : 'Resume',
-          kind: 'primary',
-          run: () => toggleRun()
-        },
-        {
-          id: 'reset',
-          label: 'Reset',
-          kind: 'secondary',
-          run: () => reset()
-        }
+        { id: 'toggle', label: isRunning ? 'Pause' : 'Resume', kind: 'primary', run: () => toggleRun() },
+        { id: 'reset', label: 'Reset', kind: 'secondary', run: () => reset() }
       ],
       updatedAt: Date.now()
     });
-    // Register runners (idempotent)
     registerActionRunner(processId, 'toggle', () => toggleRun());
     registerActionRunner(processId, 'reset', () => reset());
-    if (!isRunning && secondsLeft === workMinutes * 60 && mode === 'work') {
-      // optionally could remove when fully reset; keep for visibility
-    }
-    return () => { /* no-op cleanup */ };
-  }, [secondsLeft, mode, isRunning, upsertProcess, workMinutes, registerActionRunner]);
+    return () => {};
+  }, [secondsLeft, mode, isRunning, upsertProcess, toggleRun, reset, registerActionRunner]);
 
   // Publish video/audio playback as a separate process
   useEffect(() => {
@@ -239,42 +272,7 @@ export default function PomodoroTimer() {
     return 100 - (secondsLeft / total) * 100;
   };
 
-  function toggleRun() {
-    setIsRunning(r => {
-      const next = !r;
-      if (next) {
-        // starting / resuming
-        setTargetEpoch(Date.now() + secondsLeft * 1000);
-        // Clear remainingSeconds from storage when resuming
-        try {
-          const raw = localStorage.getItem('pomodoroSettings');
-            const existing = raw ? JSON.parse(raw) : {};
-            delete existing.remainingSeconds;
-            existing.isRunning = true;
-            existing.targetEpoch = Date.now() + secondsLeft * 1000;
-            localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
-        } catch {}
-      } else {
-        setTargetEpoch(null);
-        // Persist remainingSeconds when pausing
-        try {
-          const raw = localStorage.getItem('pomodoroSettings');
-          const existing = raw ? JSON.parse(raw) : {};
-          existing.isRunning = false;
-          existing.targetEpoch = null;
-          existing.remainingSeconds = secondsLeft;
-          localStorage.setItem('pomodoroSettings', JSON.stringify(existing));
-        } catch {}
-      }
-      return next;
-    });
-  }
-  function reset() {
-    setIsRunning(false);
-    setMode('work');
-    setSecondsLeft(workMinutes * 60);
-    setTargetEpoch(null);
-  }
+  // (Removed duplicate toggleRun/reset definitions)
   // ---------- YouTube utilities ----------
   function parseYouTubeId(url: string) {
     try {
@@ -788,11 +786,7 @@ export default function PomodoroTimer() {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [currentTimeSec, isPlayingAudio, currentIndex]);
 
-  // --- Optional remote persistence stub (no-op for static export) ---
-  // To enable server persistence, implement an API endpoint and call saveRemote(data).
-  const saveRemote = useCallback((data: unknown) => {
-    // Example: fetch('https://your-endpoint.example.com/pomodoro', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
-  }, []);
+  // --- Optional remote persistence stub removed (unused) ---
 
   function formatVideoDuration(sec?: number) {
     if (!sec && sec !== 0) return '—';

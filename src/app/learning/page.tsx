@@ -33,7 +33,14 @@ function loadSessions(): Session[] {
 function saveSessions(list: Session[]) {
   if (typeof window === 'undefined') return; try { localStorage.setItem('learningSessions', JSON.stringify(list)); } catch {}
 }
-function addSession(s: Session) { const list = loadSessions(); list.push(s); saveSessions(list); }
+function addSession(s: Session) {
+  const list = loadSessions();
+  // Deduplicate: if a session with same taskId and identical start/end already exists, skip
+  const exists = list.some(x => x.taskId === s.taskId && x.start === s.start && x.end === s.end && Math.abs(x.durationMs - s.durationMs) <= 1000);
+  if (exists) return;
+  list.push(s);
+  saveSessions(list);
+}
 
 function startOfDay(ts: number) { const d = new Date(ts); d.setHours(0,0,0,0); return d.getTime(); }
 function isSameDay(a: number, b: number) { return startOfDay(a) === startOfDay(b); }
@@ -218,7 +225,6 @@ export default function LearningPage() {
     }));
     setActiveId(id);
   try { localStorage.setItem('learningActiveId', id); } catch {}
-  setTimeout(recomputeMetrics, 0);
   }
 
   function pauseTask(id: string) {
@@ -232,7 +238,6 @@ export default function LearningPage() {
     }));
     if (activeId === id) setActiveId(null);
   try { localStorage.removeItem('learningActiveId'); } catch {}
-  setTimeout(recomputeMetrics, 0);
   }
 
   function resetTask(id: string) {
@@ -248,19 +253,15 @@ export default function LearningPage() {
     }));
     if (activeId === id) setActiveId(null);
     try { localStorage.removeItem('learningActiveId'); } catch {}
-    setTimeout(recomputeMetrics, 0);
   }
 
   function applyTodayAdjustment() {
     setAdjustments(prev => ({ ...prev, [today]: tempAdjustmentMin * 60000 }));
-    // Recompute after state updates flush
-    setTimeout(recomputeMetrics, 0);
   }
 
   function clearTodayAdjustment() {
     setAdjustments(prev => { const copy = { ...prev }; delete copy[today]; return copy; });
     setTempAdjustmentMin(0);
-    setTimeout(recomputeMetrics, 0);
   }
 
   // Removed zeroToday in favor of a unified full reset (resetAllDurations) triggered from the Quick button.

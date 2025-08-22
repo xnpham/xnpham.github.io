@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useState } from 'react';
-import { useActivity } from './ActivityProvider';
+import { useActivity, ActivityProcess } from './ActivityProvider';
 
 export default function ActivityPanel() {
   const { processes, invokeAction } = useActivity();
@@ -17,11 +17,26 @@ export default function ActivityPanel() {
     try { localStorage.setItem('activityPanelOpen', open ? '1' : '0'); } catch {}
   }, [open]);
 
-  const typeLabel = (p: any) => {
+  const typeLabel = (p: ActivityProcess) => {
     if (p.type === 'pomodoro') return 'Pomodoro';
     if (p.type === 'video') return 'Media';
     if (p.type === 'generic' && p.meta && 'number' in p.meta) return 'Learning';
     return p.type;
+  };
+
+  const getNumber = (obj: unknown, key: string): number | undefined => {
+    if (obj && typeof obj === 'object' && key in obj) {
+      const v = (obj as Record<string, unknown>)[key];
+      if (typeof v === 'number') return v;
+    }
+    return undefined;
+  };
+  const getString = (obj: unknown, key: string): string | undefined => {
+    if (obj && typeof obj === 'object' && key in obj) {
+      const v = (obj as Record<string, unknown>)[key];
+      if (typeof v === 'string') return v;
+    }
+    return undefined;
   };
 
   return (
@@ -57,38 +72,47 @@ export default function ActivityPanel() {
               </div>
               <div className="font-semibold text-sm truncate">{p.label}</div>
               {p.status && <div className="text-[10px] mt-1 inline-block px-1.5 py-0.5 rounded bg-blue-600/20 text-blue-400">{p.status}</div>}
-              {p.meta && p.type === 'pomodoro' && (
-                <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] text-[color:var(--muted)]">
-                  {'secondsLeft' in p.meta && <span>Remaining: {Math.floor((p.meta.secondsLeft||0)/60)}m {(p.meta.secondsLeft||0)%60}s</span>}
-                  {'mode' in p.meta && <span>Mode: {p.meta.mode}</span>}
-                </div>
-              )}
-              {p.meta && p.type === 'video' && (
-                <div className="mt-2 text-[10px] text-[color:var(--muted)]">
-                  {p.meta.title && <div className="truncate">{p.meta.title}</div>}
-                  {'progress' in p.meta && typeof p.meta.progress === 'number' && (
-                    <div className="h-1 rounded bg-white/10 overflow-hidden mt-1">
-                      <div className="h-full bg-blue-500" style={{ width: `${p.meta.progress}%` }} />
-                    </div>
-                  )}
-                </div>
-              )}
-              {p.meta && p.type === 'generic' && 'elapsedMs' in p.meta && (
-                <div className="mt-2 text-[10px] text-[color:var(--muted)] flex items-center gap-2">
-                  <span className="font-mono">
-                    {(() => {
-                      const ms = Number(p.meta.elapsedMs) || 0;
-                      const totalSec = Math.floor(ms / 1000);
-                      const h = Math.floor(totalSec / 3600).toString().padStart(2,'0');
-                      const m = Math.floor((totalSec % 3600) / 60).toString().padStart(2,'0');
-                      const s = Math.floor(totalSec % 60).toString().padStart(2,'0');
-                      return `${h}:${m}:${s}`;
-                    })()}
-                  </span>
-                  {p.meta.category && <span>{p.meta.category}</span>}
-                  {p.meta.urgency && <span className="uppercase tracking-wide text-[color:var(--text)]/70">{p.meta.urgency}</span>}
-                </div>
-              )}
+              {p.meta && p.type === 'pomodoro' && (() => {
+                const secondsLeft = getNumber(p.meta, 'secondsLeft');
+                const mode = getString(p.meta, 'mode');
+                return (
+                  <div className="mt-2 grid grid-cols-2 gap-1 text-[10px] text-[color:var(--muted)]">
+                    {typeof secondsLeft === 'number' && <span>Remaining: {Math.floor(secondsLeft/60)}m {secondsLeft%60}s</span>}
+                    {mode && <span>Mode: {mode}</span>}
+                  </div>
+                );
+              })()}
+              {p.meta && p.type === 'video' && (() => {
+                const title = getString(p.meta, 'title');
+                const progress = getNumber(p.meta, 'progress');
+                return (
+                  <div className="mt-2 text-[10px] text-[color:var(--muted)]">
+                    {title && <div className="truncate">{title}</div>}
+                    {typeof progress === 'number' && (
+                      <div className="h-1 rounded bg-white/10 overflow-hidden mt-1">
+                        <div className="h-full bg-blue-500" style={{ width: `${progress}%` }} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+              {p.meta && p.type === 'generic' && (() => {
+                const elapsedMs = getNumber(p.meta, 'elapsedMs');
+                if (typeof elapsedMs !== 'number') return null;
+                const category = getString(p.meta, 'category');
+                const urgency = getString(p.meta, 'urgency');
+                const totalSec = Math.floor(elapsedMs / 1000);
+                const h = Math.floor(totalSec / 3600).toString().padStart(2,'0');
+                const m = Math.floor((totalSec % 3600) / 60).toString().padStart(2,'0');
+                const s = Math.floor(totalSec % 60).toString().padStart(2,'0');
+                return (
+                  <div className="mt-2 text-[10px] text-[color:var(--muted)] flex items-center gap-2">
+                    <span className="font-mono">{`${h}:${m}:${s}`}</span>
+                    {category && <span>{category}</span>}
+                    {urgency && <span className="uppercase tracking-wide text-[color:var(--text)]/70">{urgency}</span>}
+                  </div>
+                );
+              })()}
               {p.actions && p.actions.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {p.actions.map(a => (
